@@ -9,17 +9,24 @@
 #include "AppSettings.h"
 #include "MutualM5.h"
 
+// -------- Config: nome e PIN do dispositivo Bluetooth alvo --------
+const char* targetBtName = "OBDII";   // <-- ajuste para o NOME exato anunciado pelo seu dongle (ex.: "V-LINK", "ELM327", "CHX")
+const char* targetBtPin  = "1234";    // PIN comum: "1234" ou "0000"
+
+// -----------------------------------------------------------------
 AppSettings appSettings;
 AppStatus appStatus;
 AppUI appUI = AppUI(&appStatus, &appSettings);
 
 BluetoothSerial SerialBT;
 ELM327 elm327;
+// (opcional) fallback por MAC, se quiser manter:
 uint8_t elm327MacAddress[6] = {0x8D, 0x04, 0xF8, 0x00, 0x52, 0x2F};
 
 uint64_t chipid;
 char chipname[256];
 
+// ---------------- Tasks ----------------
 void heartBeatTask(void *arg)
 {  
   while (1)
@@ -38,34 +45,44 @@ void heartBeatTask(void *arg)
   }
 }
 
+// ----------- Nova função: conectar por NOME -----------
+bool connectBluetoothByName(const char* remoteName,
+                            uint32_t retryDelayMs = 300,
+                            uint32_t timeoutMs    = 15000)
+{
+  appStatus.mutualUpdate([](AppStatus* s){
+    s->bluetoothConnected = false;
+    s->elm327Connected    = false;
+  });
+
+  uint32_t t0 = millis();
+  while ((millis() - t0) < timeoutMs) {
+    if (SerialBT.connect(remoteName)) {
+      appStatus.mutualUpdate([](AppStatus* s){
+        s->bluetoothConnected = true;
+      });
+      return true;
+    }
+    delay(retryDelayMs);
+  }
+  return false;
+}
+
+// -------- Versão final: tenta NOME e (opcional) fallback por MAC --------
 bool connectBluetooth()
 {
-  bool bluetoothConnected = false;
-  appStatus.mutualUpdate(
-      [](AppStatus *s)
-      {
-        s->bluetoothConnected = false;
-        s->elm327Connected = false;
-      });
-
-  while (!bluetoothConnected)
-  {
-    if (SerialBT.connect(elm327MacAddress))
-    {
-      bluetoothConnected = true;
-      appStatus.mutualUpdate(
-          [](AppStatus *s)
-          {
-            s->bluetoothConnected = true;
-          });
-    }
-    else
-    {
-      delay(200);
-    }
+  // 1) tenta pelo NOME (recomendado)
+  if (connectBluetoothByName(targetBtName, 300, 15000)) {
+    return true;
   }
-  
-  return bluetoothConnected;
+
+  // 2) fallback por MAC (opcional; remova se não quiser)
+  if (SerialBT.connect(elm327MacAddress)) {
+    appStatus.mutualUpdate([](AppStatus* s){ s->bluetoothConnected = true; });
+    return true;
+  }
+
+  return false;
 }
 
 bool connectElm327()
@@ -138,7 +155,6 @@ void elm327Task(void *arg)
         }
         else
         {
-          // mantém o fluxo original
           continue;
         }
 
@@ -169,11 +185,11 @@ void elm327Task(void *arg)
         {
           // deltaSpeed em m/s
           float deltaSpeed = (kph - lastKph) * 1000.0f / 3600.0f;
-          float deltaTime  = (float)( (millis() - thisLastKphTime) / 1000.0f );
+          float deltaTime  = (float)((millis() - thisLastKphTime) / 1000.0f);
           float currentAccel = (deltaTime > 0.0f) ? (deltaSpeed / deltaTime) : 0.0f;
 
-          if (currentAccel > 0 && currentAccel > accelerationMax)   accelerationMax  = currentAccel;
-          if (currentAccel < 0 && currentAccel < decelerationMax)   decelerationMax  = currentAccel;
+          if (currentAccel > 0 && currentAccel > accelerationMax) accelerationMax = currentAccel;
+          if (currentAccel < 0 && currentAccel < decelerationMax) decelerationMax = currentAccel;
 
           float sign = (currentAccel >= 0.0f) ? 1.0f : -1.0f;
           float divider = (currentAccel >= 0.0f) ? accelerationMax : decelerationMax;
@@ -376,8 +392,9 @@ void setup()
   EEPROM.begin(sizeof(AppSettingsData));
   appSettings.load();
 
-  SerialBT.begin(chipname, true);
-  SerialBT.setPin("1234");
+  // Inicia Bluetooth como MASTER e aplica PIN
+  SerialBT.begin(chipname, true); // true = master
+  SerialBT.setPin(targetBtPin);   // usa o PIN desejado
 
   xTaskCreatePinnedToCore(powerTaskInfo, "powerTaskInfo", configMINIMAL_STACK_SIZE + 1024, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(powerTaskResetButton, "powerTaskResetButton", configMINIMAL_STACK_SIZE + 1024, NULL, 1, NULL, 0);
