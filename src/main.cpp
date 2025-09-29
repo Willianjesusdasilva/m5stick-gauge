@@ -29,6 +29,7 @@ void heartBeatTask(void *arg)
     appStatus.heartBeat = !appStatus.heartBeat;
 
     bool isOperating = appStatus.bluetoothConnected && appStatus.elm327Connected;
+    // ELMduino 3.x: usar nb_rx_state no lugar de status
     bool isOperatingOk = isOperating && appStatus.lastElm327Status == ELM_SUCCESS;
 
     appStatus.unlock();
@@ -72,6 +73,7 @@ bool connectElm327()
   bool elm327Connected = false;
   while (!elm327Connected)
   {
+    // assinatura do begin permanece compatível no 3.x
     if (elm327.begin(SerialBT, false, 5000))
     {
       elm327Connected = true;
@@ -92,8 +94,8 @@ bool connectElm327()
 
 void elm327Task(void *arg)
 {
-  float accelerationMax = 1.0; // m/(sek^2)
-  float decelerationMax = -1.0; // m/(sek^2)
+  float accelerationMax = 1.0;  // m/s^2
+  float decelerationMax = -1.0; // m/s^2
 
   while (1)
   {
@@ -107,7 +109,8 @@ void elm327Task(void *arg)
 
     while (elm327.connected && SerialBT.connected())
     {
-      int8_t lastStatus = elm327.status;
+      // 3.x: nb_rx_state no lugar de status
+      int8_t lastStatus = elm327.nb_rx_state;
       appStatus.mutualUpdate(
             [lastStatus](AppStatus *s)
             {
@@ -116,12 +119,14 @@ void elm327Task(void *arg)
 
       delay(50);
 
-      if ((lastFrequentTime - millis()) > 50)
+      // FIX: comparações de tempo estavam invertidas
+      if ((millis() - lastFrequentTime) > 50)
       {
         lastFrequentTime = millis();
 
+        // As funções retornam o valor e o estado vai para nb_rx_state
         float engineRpm = elm327.rpm();
-        if (elm327.status == ELM_SUCCESS)
+        if (elm327.nb_rx_state == ELM_SUCCESS)
         {
           appStatus.mutualUpdate(
               [engineRpm](AppStatus *s)
@@ -133,11 +138,12 @@ void elm327Task(void *arg)
         }
         else
         {
+          // mantém o fluxo original
           continue;
         }
 
         float engineLoad = elm327.engineLoad();
-        if (elm327.status == ELM_SUCCESS)
+        if (elm327.nb_rx_state == ELM_SUCCESS)
         {
           appStatus.mutualUpdate(
               [engineLoad](AppStatus *s)
@@ -153,29 +159,26 @@ void elm327Task(void *arg)
         }
       }
 
-      if ((lastKphTime - millis()) > 500)
+      if ((millis() - lastKphTime) > 500)
       {
         unsigned long thisLastKphTime = lastKphTime;
         lastKphTime = millis();
 
         float kph = elm327.kph();
-        if (elm327.status == ELM_SUCCESS)
+        if (elm327.nb_rx_state == ELM_SUCCESS)
         {
-          float deltaSpeed = (kph - lastKph) * 1000.0 / 3600.0;
-          float deltaTime = (float)((millis() - thisLastKphTime) / 1000.0);
-          float currentAccel = deltaSpeed / deltaTime;
-          if (currentAccel > 0 && currentAccel > accelerationMax)
-          {
-            accelerationMax = currentAccel;
-          }
-          if (currentAccel < 0 && currentAccel < decelerationMax)
-          {
-            decelerationMax = currentAccel;
-          }
+          // deltaSpeed em m/s
+          float deltaSpeed = (kph - lastKph) * 1000.0f / 3600.0f;
+          float deltaTime  = (float)( (millis() - thisLastKphTime) / 1000.0f );
+          float currentAccel = (deltaTime > 0.0f) ? (deltaSpeed / deltaTime) : 0.0f;
 
-          float sign = currentAccel > 0 ? 1.0 : -1.0;
-          float divider = currentAccel > 0 ? accelerationMax : decelerationMax;
-          float accelPercent = currentAccel / divider * sign * 100.0;
+          if (currentAccel > 0 && currentAccel > accelerationMax)   accelerationMax  = currentAccel;
+          if (currentAccel < 0 && currentAccel < decelerationMax)   decelerationMax  = currentAccel;
+
+          float sign = (currentAccel >= 0.0f) ? 1.0f : -1.0f;
+          float divider = (currentAccel >= 0.0f) ? accelerationMax : decelerationMax;
+          // evita divisão por zero
+          float accelPercent = (divider != 0.0f) ? (currentAccel / divider * sign * 100.0f) : 0.0f;
 
           lastKph = kph;
 
@@ -189,7 +192,7 @@ void elm327Task(void *arg)
         }
         else
         {
-          lastKph = 0.0;
+          lastKph = 0.0f;
           continue;
         }
       }
@@ -199,7 +202,7 @@ void elm327Task(void *arg)
         last1SecTime = millis();
 
         float engineCoolantTemp = elm327.engineCoolantTemp();
-        if (elm327.status == ELM_SUCCESS)
+        if (elm327.nb_rx_state == ELM_SUCCESS)
         {
           appStatus.mutualUpdate(
               [engineCoolantTemp](AppStatus *s)
@@ -215,7 +218,7 @@ void elm327Task(void *arg)
         }
 
         float ctrlModVoltage = elm327.ctrlModVoltage();
-        if (elm327.status == ELM_SUCCESS)
+        if (elm327.nb_rx_state == ELM_SUCCESS)
         {
           appStatus.mutualUpdate(
               [ctrlModVoltage](AppStatus *s)
